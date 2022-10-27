@@ -1,17 +1,16 @@
 # load packages
 library(tidyverse)
 library(foreign)
-library(DescTools)  # for the Tarone test (a modification of the Breslow-Day test) and CochranArmitageTest
-library(vcdExtra)   # for CMHtest
-library(coin)       # for lbl_test (redundant if test if linear association with dose levels is valid)
+library(vcdExtra)     # for CMHtest
+# library(coin)       # for lbl_test (redundant if test if linear association with dose levels is valid)
+# library(DescTools)  # for the Tarone test (a modification of the Breslow-Day test) and CochranArmitageTest
 
 # import data from SPSS (CB1, Activity 4.1)
 df.sav <- read.spss('O:/M249/SPSS/Data/Book1/smoking2.sav', use.value.labels = TRUE, to.data.frame = TRUE)
 
 # Create contingency table
 table.sav <- xtabs(count ~ ., df.sav)             # use "table.sav <- " to asign to object
-strata.df <- as.data.frame(table.sav, stringsAsFactors = FALSE)
-strata <- unique(as.numeric(strata.df$dose))
+strata <- sort(unique(df.sav$dose))
 
 # Pearson chi-squared test of association (Pearson Chi-Square in SPSS)
 chi.stat <- unname(chisq.test(table.sav)$statistic)
