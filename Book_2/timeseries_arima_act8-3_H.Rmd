@@ -1,0 +1,234 @@
+---
+# title: ""
+# author: ""
+# date: ""
+output: html_document
+---
+
+```{r all_chunks, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      error = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      include = TRUE,                   # code shows in Rmd output document
+                      fig.dim = c(5, 3), 
+                      fig.path = 'o:/m249/r/figs', 
+                      fig.align = 'center') 
+
+suppressWarnings(suppressMessages(suppressPackageStartupMessages(library(ggplot2))))
+suppressWarnings(suppressMessages(suppressPackageStartupMessages(library(dplyr))))
+```
+
+```{r label = "load-pkgs"}
+library(fpp3)
+library(foreign)
+library(cowplot)
+# packages <- c("fpp3", "foreign", "cowplot")
+# xfun::pkg_attach(packages, install = TRUE, message = FALSE)
+```
+
+# Time series: choosing an appropriate ARIMA model
+
+In Activity 8.3 (Computer book 2, page 54) we use SPSS data file 'airline5.sav', which we can import using the 'foreign' package. We are told that that a log transformation and differencing twice produces a time series that is stationary in both mean and variance so I have included those changes as part of the import process by using the 'mutate' function of 'dplyr'.
+
+```{r label = "getdata"}
+
+# import data from SPSS (CB2, activity 8.10 'airline5.sav')
+# the 'mutate' entries are aimed at achieving a variable whose time series plot represents 'white noise'
+dt <- read.spss('O:/M249/SPSS/Data/Book2/airline5.sav', 
+                use.value.labels = TRUE, 
+                to.data.frame = TRUE) %>% 
+  rename(date = YEAR_) %>% 
+  mutate(passengers = passengers,    # redundant at the mo but I may want to change variable name to 'data'
+         passengers.ln = log(passengers), 
+         diff_1 = difference(passengers.ln), 
+         diff_2 = difference(diff_1)) %>%
+  select(date, passengers, passengers.ln, diff_1, diff_2) %>% 
+  as_tsibble(index = date)
+
+```
+
+<br>
+
+
+## Plotting a stationary time series
+
+We plot the time series to visually assess stationarity. We go straight to plotting 'diff_2' against 'year' but in exploring a new time series we could sequentially plot raw data, trial transformations, and incremental differencing until we see a plot tat is consistent with the time series being stationary.
+
+```{r label = "plot_ts", fig.dim = c(7, 5)}
+
+# plot time series of raw data, transformed data, and first and second differences until 'white noise' is seen
+ggplot(dt) +
+  theme_bw() + 
+  aes(x = date, 
+      y = diff_2) +    # 'y' variable: trial and error with variables from 'mutate' until stationary ts
+  geom_line() + 
+  labs(x = "Year", 
+       y = "", 
+       title = "Second difference of the logarithm of \nannual passenger numbers")
+
+```
+
+<br>
+
+## Plotting ACF and PACF
+
+If it is plausible that the time series has zero mean and constant variance, we then assess the correlogram and the partial correlogram for lags 1 to 20 for the second differences of the time series of logarithms of the annual numbers of airline passengers.
+
+```{r label = "correlogram", fig.dim = c(7, 5)}
+lags <- 20
+acf <- dt %>% ACF(diff_2, lag_max = lags)
+ac.y <- acf$acf
+ac.x <- c(1:lags)
+
+plot.acf <- ggplot(acf) + 
+  aes(y = ac.y, x = ac.x) + 
+  ylim(c(-1, 1)) +
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = NA) + 
+  geom_hline(yintercept = 0, 
+             colour = "black") + 
+  geom_hline(yintercept = -(1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  geom_hline(yintercept = (1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  labs(subtitle = "ACF", 
+       x = "Lag", 
+       y = NULL) + 
+  theme_bw()
+
+# PACF _____________________________________________
+pacf <- dt %>% PACF(diff_2, lag_max = lags)
+pac.y <- pacf$pacf
+pac.x <- c(1:lags)
+
+plot.pacf <- ggplot(pacf) + 
+  aes(y = pac.y, x = pac.x) + 
+  ylim(c(-1, 1)) +
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = NA) + 
+  geom_hline(yintercept = 0, 
+             colour = "black") + 
+  geom_hline(yintercept = -(1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  geom_hline(yintercept = (1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  labs(subtitle = "PACF", 
+       x = "Lag", 
+       y = NULL) + 
+  theme_bw()
+
+plot_grid(plot.acf, plot.pacf, ncol = 1, align = 'v', axis = 'l')
+```
+
+<br>
+
+```{r label = "LjungBox"}
+lb <- dt %>% 
+  features(diff_2, ljung_box, lag = 20)
+
+lb.stat <- lb$lb_stat
+lb.pval <- lb$lb_pvalue
+```
+Although the ACF at lag 1 crosses the lower significance bound, the Ljung-Box statistic is `r signif(lb.stat, 4)` (\(p\)-value \(= `r signif(lb.pval, 3)`\)), which provides little evidence against the null hypothesis of zero autocorrelations at lags 1 to 20.
+
+<br>
+
+## Choosing an ARIMA model
+
+The plots of ACF and PACF can be interpreted in several ways, with plausible models being ARIMA(\(p\), 2, \(q\)), where possible choices are \(p = (0:1)\) and \(q = (0:2)\). A range of values of \(p\) and \(q\) can be tried in a vector of putative ARIMA models. The model names in quotation marks are merely labels, assigned arbitrarily. For the 'ARIMA(auto)' model, \(p\), and \(d\), and \(q\) have been assigned ranges and the function 'model()' computes optimal values by minimising RMSE and other errors. 
+
+```{r label = "models", echo = TRUE}
+# pdq(p = 0:5, d = 0:2, q = 0:5, p_init = 0, q_init = 1)
+mdl <- dt %>%
+  model('ARIMA(1, 2, 0)' = ARIMA(log(passengers) ~ pdq(1, 2, 0)), 
+        'ARIMA(1, 2, 1)' = ARIMA(log(passengers) ~ pdq(1, 2, 1)), 
+        'ARIMA(0, 2, 1)' = ARIMA(log(passengers) ~ pdq(0, 2, 1)), 
+        'ARIMA(0, 2, 2)' = ARIMA(log(passengers) ~ pdq(0, 2, 2)), 
+        'ARIMA(2, 2, 0)' = ARIMA(log(passengers) ~ pdq(2, 2, 0)), 
+        'ARIMA(2, 2, 1)' = ARIMA(log(passengers) ~ pdq(2, 2, 1)), 
+        'ARIMA(1, 2, 2)' = ARIMA(log(passengers) ~ pdq(1, 2, 2)), 
+        'ARIMA(auto)'    = ARIMA(log(passengers) ~ pdq(p = 0:5, d = 0:2, q = 0:5)))
+```
+
+We can extract values for \(p\), \(d\), \(q\), and \(n\) (the number of points in the time series) and calculate \(k\) (used to derive SSE).
+```{r label = "errors"}
+i <- p <- d <- q <- k <- c()
+n <- length(dt$diff_2[!is.na(dt$diff_2)])
+for (i in 1:ncol(mdl)) {
+  p <- c(p, mdl[[i]][[1]]$fit$spec$p)
+  d <- c(d, mdl[[i]][[1]]$fit$spec$d)
+  q <- c(q, mdl[[i]][[1]]$fit$spec$q)
+}
+k <- p + q
+
+errors <- mdl %>% 
+  accuracy()
+
+errors <- errors %>% 
+  mutate(SSE = (n - d - k) * RMSE^2) %>%
+  select(.model, RMSE, SSE)    # not ME, MAE, MPE, MAPE, MASE, RMSSE, ACF1
+
+rm(d, i, k, n, p, q)
+
+errors
+```
+
+I find it much easier to decide which models have the lowest error values by examining barplots:
+
+```{r label = "plotRMSE", fig.dim = c(7, 4)}
+# plot RMSE
+ggplot(errors) + 
+  aes(y = (RMSE / 1e+06), x = .model) + 
+  scale_y_continuous(expand = expansion(mult = c(0, 0))) + 
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = "lightblue", 
+           alpha = 0.4) + 
+  geom_hline(yintercept = (min(errors$RMSE) / 1e+06), 
+             colour = "red") + 
+  labs(title = "RMSE", 
+       x = "Lag", 
+       y = "x 10^6") + 
+  theme_minimal() + 
+  theme(axis.line.x = element_blank(), 
+        axis.line.y = element_line(), 
+        axis.text.x = element_text(angle = 45, vjust = 0.6))
+```
+```{r label = "plotSSE", fig.dim = c(7, 4)}
+# plot SSE
+ggplot(errors) + 
+  aes(y = (SSE / 1e+14), x = .model) + 
+  scale_y_continuous(expand = expansion(mult = c(0, 0))) + 
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = "lightblue", 
+           alpha = 0.4) + 
+  geom_hline(yintercept = (min(errors$SSE) / 1e+14), 
+             colour = "red") + 
+  labs(title = "SSE", 
+       x = "Lag", 
+       y = "x 10^14") + 
+  theme_minimal() + 
+  theme(axis.line.x = element_blank(), 
+        axis.line.y = element_line(), 
+        axis.text.x = element_text(angle = 45, vjust = 0.6))
+```
+
+There are several candidate models with similar, low error values. The principle of parsimony suggests that, of these, the ARIMA(0, 2, 1) model should be chosen. The ARIMA(auto) candidate, in which the function computes optimal values, also identifies ARIMA(0, 2, 1) as the model of choice. This is the same conclusion reached by Solution 8.3 in Computer book 2.
+
+<br>
+
+## Reference
+
+I have used [\textbf{Forecasting: Principles and Practice (3rd ed), by Rob J Hyndman and George Athanasopoulos}](https://otexts.com/fpp3/) to learn time series analysis in R. The ebook is free and published in full and contains all the code you need to learn about TSA in R. It is fantastic and easy to follow as the style of teaching is close to that used in M249. The book has an accompanying package (fpp3) available to install from CRAN, which loads all the necessary packages (from the Tidyverse family) and all the data that you need to follow the text and code. I highly recommend the book. I have enjoyed learning about time series so I'll probably buy the paper copy of the book (circa £40) as I'm old and think that a book in the hand is worth two in the Kindle (to paraphrase the old proverb).
