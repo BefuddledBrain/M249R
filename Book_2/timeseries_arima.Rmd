@@ -1,0 +1,400 @@
+---
+output:
+  pdf_document: default
+    # html_document: default
+
+editor_options:
+  chunk_output_type: console
+---
+
+```{r all_chunks, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      error = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      include = TRUE, 
+                      fig.dim = c(7, 4), 
+                      fig.align = 'center', 
+                      fig.path = 'o:/m249/r/figs') 
+
+suppressWarnings(suppressMessages(suppressPackageStartupMessages(library(ggplot2))))
+suppressWarnings(suppressMessages(suppressPackageStartupMessages(library(dplyr))))
+```
+
+```{r label = "load-pkgs"}
+library(fpp3)
+library(foreign)
+library(cowplot)
+# packages <- c("fpp3", "foreign", "cowplot")
+# xfun::pkg_attach(packages, install = TRUE, message = FALSE)
+```
+
+# Time series: choosing an appropriate ARIMA model
+
+<br>
+
+This notebook is based on Activities 8.4, 8.5, 8.6, and 8.8 (Computer book 2, pages 55, 58, 60, and 64), which all use SPSS data file 'production.sav', or similar, which are imported using the 'foreign' package. The 'mutate' function of 'dplyr' is then used to  transform variables or to add differencing as part of the import process.
+
+I have changed the name of the variable of interest from 'index' to 'dat', and have concatenated the time variables to a single date/month/quarter variable, named 'date'. I intend to use this consistent variable naming convention for dependent and independent variables in order to facilitate re-using similar code for other time series analyses without having to start afresh each time .
+
+```{r label = "getdata"}
+# import data from SPSS (CB2, activity 8.4 'production.sav'), quarterly data with second order difference
+# the 'mutate' entries are aimed at achieving a variable whose time series plot represents 'white noise'
+dt <- read.spss('O:/M249/SPSS/data/Book2/production.sav', use.value.labels = TRUE, to.data.frame = TRUE) %>% 
+  rename(year = YEAR_, 
+         quarter = QUARTER_, 
+         date = DATE_, 
+         fc = forecast, 
+         err = error, 
+         dat = index) %>%
+  mutate(date = yearquarter(date), 
+         diff_1 = difference(dat), 
+         diff_2 = difference(diff_1)) %>% 
+  select(date, dat, diff_1, diff_2) %>%    # , fc, err
+  as_tsibble(index = date)
+```
+
+\vspace{15mm}
+
+
+## Plotting a stationary time series
+
+We plot the time series to visually assess stationarity. I have gone straight to plotting 'diff_2' against 'year' but in exploring a new time series we could sequentially plot raw data, trial transformations, and incremental differencing until we see a plot that is consistent with the time series being stationary ('white noise').
+
+```{r label = "plot_ts", fig.dim = c(7, 5)}
+
+# plot time series of raw data, transformed data, and first and second differences until 'white noise' is seen
+ggplot(dt) +
+  theme_bw() + 
+  aes(x = date, 
+      y = diff_2) +    # 'y' variable: trial and error with variables from 'mutate' until stationary ts
+  geom_line(colour = "firebrick") + 
+  labs(x = "Year", 
+       y = "", 
+       title = "Second difference of time series variable")
+
+```
+
+\newpage{}
+## Plotting ACF and PACF
+
+Plot the correlogram and the partial correlogram for lags 1 to 20 for the stationary time series  to visually assess whether there is any auto-correlation.
+
+```{r label = "correlogram", fig.dim = c(7, 4)}
+lags <- 20
+acf <- dt %>% ACF(diff_2, lag_max = lags)
+ac.y <- acf$acf
+ac.x <- c(1:lags)
+
+plot.acf <- ggplot(acf) + 
+  aes(y = ac.y, x = ac.x) + 
+  ylim(c(-1, 1)) +
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = "lightblue", 
+           alpha = 0.4) + 
+  geom_hline(yintercept = 0, 
+             colour = "black") + 
+  geom_hline(yintercept = -(1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  geom_hline(yintercept = (1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  labs(subtitle = "ACF", 
+       x = "Lag", 
+       y = NULL) + 
+  theme_bw()
+
+# PACF _____________________________________________
+pacf <- dt %>% PACF(diff_2, lag_max = lags)
+pac.y <- pacf$pacf
+pac.x <- c(1:lags)
+
+plot.pacf <- ggplot(pacf) + 
+  aes(y = pac.y, x = pac.x) + 
+  ylim(c(-1, 1)) +
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = "lightblue", 
+           alpha = 0.4) + 
+  geom_hline(yintercept = 0, 
+             colour = "black") + 
+  geom_hline(yintercept = -(1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  geom_hline(yintercept = (1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  labs(subtitle = "PACF", 
+       x = "Lag", 
+       y = NULL) + 
+  theme_bw()
+
+plot_grid(plot.acf, plot.pacf, ncol = 1, align = 'v', axis = 'l')
+```
+
+\vspace{5mm}
+
+## Portmanteau test of ACF and PACF
+
+```{r label = "LjungBox"}
+lb <- dt %>% 
+  features(diff_2, ljung_box, lag = 20)
+
+lb.stat <- lb$lb_stat
+lb.pval <- lb$lb_pvalue
+```
+We can use a statistical test of the presence of autocorrelation. The Ljung-Box statistic is `r signif(lb.stat, 4)` (\(p\)-value \(= `r signif(lb.pval, 3)`\)).
+The null hypothesis of the Ljung-Box test is that there is no non-zero autocorrelation at lags 1 to 20 (20 is arbitrary).
+Higher values of statistic and p-value give little evidence of autocorrelation.
+
+\vspace{8mm}
+
+## Choosing an ARIMA model
+
+Inspect the plots of ACF and PACF and decide on plausible models, ARIMA(\(p\), \(d\), \(q\)).
+A range of values of \(p\) and \(q\) can be tried in a vector of putative ARIMA models.
+The model names in quotation marks are merely labels, assigned arbitrarily. For the 'ARIMA(auto)' model, \(p\), and \(d\), and \(q\) have been assigned ranges and the function 'model()' computes optimal values. The ' + PDQ(0, 0, 0)' in the model specification ensures that only non-seasonal models are considered.
+
+\vspace{8mm}
+
+```{r label = "models", echo = TRUE}
+# pdq(p = 0:5, d = 0:2, q = 0:5, p_init = 0, q_init = 1)
+# fit a model
+fit <- dt %>%
+  model('ARIMA(0, 2, 1)' = ARIMA(dat ~ pdq(0, 2, 1) + PDQ(0, 0, 0)), 
+        'ARIMA(1, 2, 0)' = ARIMA(dat ~ pdq(1, 2, 0) + PDQ(0, 0, 0)),
+        'ARIMA(1, 2, 1)' = ARIMA(dat ~ pdq(1, 2, 1) + PDQ(0, 0, 0)),
+        'ARIMA(auto)'    = ARIMA(dat ~ pdq(p = 0:2, d = 2, q = 0:2) + PDQ(0, 0, 0)))
+```
+
+<br>
+
+## Extracting parameters
+
+We can extract values for \(p\), \(d\), \(q\), and \(n\) (the number of points in the time series) and calculate \(k\) (used to derive SSE).
+
+\vspace{8mm}
+
+```{r label = "pdqkn"}
+i <- p <- d <- q <- k <- c()
+```
+```{r label = "parameters", echo = TRUE}
+n <- length(dt$diff_2[!is.na(dt$diff_2)])
+for (i in 1:ncol(fit)) {                  # n of putative models in model(ARIMA) function
+  p <- c(p, fit[[i]][[1]]$fit$spec$p)
+  d <- 2                                  # c(d, fit[[1]]$fit$spec$d)
+  q <- c(q, fit[[i]][[1]]$fit$spec$q)
+}
+k <- p + q
+
+errors <- fit %>% 
+  accuracy()
+```
+
+\vspace{8mm}
+
+```{r label = "calc_errors"}
+errors <- errors %>% 
+  mutate(SSE = (n - d - k) * RMSE^2) %>%
+  select(.model, RMSE, SSE)    # not ME, MAE, MPE, MAPE, MASE, RMSSE, ACF1
+rm(d, i, k, n, p, q)
+```
+```{r label = "show_errors"}
+errors                                    # find better way of showing table
+```
+
+\vspace{8mm}
+
+## Plotting RMSE and SSE
+
+It may be easier to decide which models have the lowest error values by examining barplots. In comparing models with different numbers of parameters (\(p\) + \(q\)), RMSE is preferred to SSE.
+
+```{r label = "plotRMSE", fig.dim = c(7, 3.2)}
+# plot RMSE
+ggplot(errors) + 
+  aes(y = (RMSE), x = .model) + 
+  scale_y_continuous(expand = expansion(mult = c(0, 0))) + 
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = "lightblue", 
+           alpha = 0.4) + 
+  geom_hline(yintercept = (min(errors$RMSE)), 
+             colour = "red") + 
+  labs(title = "RMSE", 
+       x = "Lag", 
+       y = "x 10^6") + 
+  theme_minimal() + 
+  theme(axis.line.x = element_blank(), 
+        axis.line.y = element_line(), 
+        axis.text.x = element_text(angle = 45, vjust = 0.6))
+```
+```{r label = "plotSSE", fig.dim = c(7, 3.2)}
+# plot SSE
+ggplot(errors) + 
+  aes(y = (SSE), x = .model) + 
+  scale_y_continuous(expand = expansion(mult = c(0, 0))) + 
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = "lightblue", 
+           alpha = 0.4) + 
+  geom_hline(yintercept = (min(errors$SSE)), 
+             colour = "red") + 
+  labs(title = "SSE", 
+       x = "Lag", 
+       y = "x 10^14") + 
+  theme_minimal() + 
+  theme(axis.line.x = element_blank(), 
+        axis.line.y = element_line(), 
+        axis.text.x = element_text(angle = 45, vjust = 0.6))
+```
+
+If there are several candidate models with similar, low error values use the principle of parsimony to select a model.
+
+Compare the ARIMA(0, 2, 1) model to the ARIMA(auto) candidate, in which the function computes optimal values.
+
+\vspace{8mm}
+
+## Extracting useful values from the model object
+
+```{r label = "get_coeffs"}
+report(fit[[1]][[1]])             # first of the models in model(ARIMA) function
+```
+
+Once we decide on a primary candidate model, we can assess it and extract useful values from the model object (fit[[\(n\)]][[1]], where \(n\) is the row number of each model that has been tried) by using various functions, such as 'report()' 
+
+MA coefficient, \(\theta_1\) = `r fit[[1]][[1]]$fit$model$model$theta`
+
+AR coefficient, \(\beta_1\) = `r fit[[1]][[1]]$fit$model$model$phi`
+
+SD of white noise, \(\sigma\)   = `r sqrt(fit[[1]][[1]]$fit$fit$sigma2)`
+
+\newpage{}
+
+## Assess forecast by plotting time series, ACF, and histogram of errors (residuals)
+
+```{r label = "setup_fc"}
+# assessing the model
+fc <- fit[[1]][[1]] %>% 
+  forecast(h = 12)
+
+fc.vals <- as_tibble(matrix(unlist(fc[2]), byrow = TRUE, ncol = 2)) %>% 
+  rename(mu = V1, sigma = V2) %>% 
+  mutate(date = yearquarter(fc$date), 
+         cblo_80 = qnorm(0.100, mu, sigma), 
+         cbhi_80 = qnorm(0.900, mu, sigma),
+         cblo_95 = qnorm(0.025, mu, sigma),
+         cbhi_95 = qnorm(0.975, mu, sigma)) %>% 
+  select(date, mu, cblo_80, cbhi_80, cblo_95, cbhi_95)
+
+
+dt <- dt %>% mutate(forecast = fit[[1]][[1]]$fit$est$.fitted, 
+              errors   = fit[[1]][[1]]$fit$est$.resid)
+```
+
+The time series of the residuals should be 'white noise'. The validity of this assumption can be assessed by examining a histogram of the errors (using a normal distribution curve for reference) and by imspecting the plot of the autocorrelation functions over the first 20 lags.
+
+```{r label = "error_plots"}
+# plot time series of errors, which should be 'white noise'
+ts_errors <- ggplot(dt) +
+  theme_bw() + 
+  aes(x = date, 
+      y = errors) +    # 'y' variable: trial and error with variables from 'mutate' until stationary ts
+  geom_line(colour = "firebrick") + 
+  labs(x = "Year", 
+       y = "", 
+       subtitle = "Plot of time series of residuals")
+
+# Plot ACF of errors (residuals), which should be 'white noise'
+lags <- 20
+acf_errors <- dt %>% ACF(errors, lag_max = lags)
+ac_err.y <- acf_errors$acf
+ac_err.x <- c(1:lags)
+
+plot_acf <- ggplot(acf_errors) + 
+  aes(y = ac_err.y, x = ac_err.x) + 
+  ylim(c(-1, 1)) +
+  geom_bar(stat="identity", 
+           width= 0.6, 
+           colour = "darkblue", 
+           fill = "lightblue", 
+           alpha = 0.4) + 
+  geom_hline(yintercept = 0, 
+             colour = "black") + 
+  geom_hline(yintercept = -(1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  geom_hline(yintercept = (1.96 / sqrt(length(dt$diff_2))), 
+             linetype = 2, 
+             colour = "firebrick") + 
+  labs(subtitle = "ACF of residuals", 
+       x = NULL, 
+       y = NULL) + 
+  theme_bw()
+
+# Histogram of errors
+bw <- 0.5
+hist_errors <- ggplot(dt) +
+  aes(x = errors) + 
+  geom_histogram(
+    aes(y = ..density..), 
+    # breaks = seq(-3.5, 3.5, by = 0.5), 
+    binwidth = bw, 
+    colour = "darkblue", fill = "lightblue") + 
+  scale_x_continuous(limits = c(-3.5, 3.5)) + 
+  geom_function(fun  = dnorm, 
+                mean = mean(dt$errors), 
+                sd   = sd(dt$errors), 
+                colour = "firebrick") + 
+  labs(subtitle = "Histogram & SND", 
+       x = NULL,
+       y = NULL) +
+  theme_bw()
+
+# set up arrangement of plots
+top_row <- ts_errors
+bottom_row <- plot_grid(plot_acf, hist_errors, labels = NULL, rel_widths = c(2, 1))
+
+resids_assess <- plot_grid(top_row, bottom_row, labels = NULL, ncol = 1)
+resids_assess
+```
+
+\newpage{}
+
+## Plot time series and forecast
+
+Produce a multi-plot of time series of variable of interest and one-step ahead forecast values for given time points. Add predicted values for required period and show prediction intervals.
+
+```{r label = "plot_fc"}
+dt %>% 
+  ggplot() +
+  theme_bw() + 
+  aes(x = date) + 
+  geom_line(aes(y = dat), colour = "firebrick") +
+  geom_line(aes(y = forecast), colour = "goldenrod") + 
+  geom_line(data = fc.vals, 
+            aes(x = date, y = mu), 
+            colour = "goldenrod") + 
+  geom_ribbon(data = fc.vals, 
+              aes(x = date, ymin = cblo_95, ymax = cbhi_95), 
+              fill = "goldenrod", 
+              alpha = 0.2) + 
+  geom_ribbon(data = fc.vals, 
+              aes(x = date, ymin = cblo_80, ymax = cbhi_80), 
+              fill = "goldenrod", 
+              alpha = 0.1) + 
+  labs(x = "Year", 
+       y = "Time series variable", 
+       title = "Second difference of the productivity index")
+```
+
+\vspace{25mm}
+
+## Reference
+
+I have used [\textbf{Forecasting: Principles and Practice (3rd ed), by Rob J Hyndman and George Athanasopoulos}](https://otexts.com/fpp3/) to learn time series analysis in R. The ebook is free and published in full and contains all the code you need to learn about TSA in R. It is fantastic and easy to follow as the style of teaching is close to that used in M249. The book has an accompanying package (fpp3) available to install from CRAN, which loads all the necessary packages (from the Tidyverse family) and all the data that you need to follow the text and code. I highly recommend the book. I have enjoyed learning about time series so I'll probably buy the paper copy of the book (circa £40) as I'm old and think that a book in the hand is worth two in the Kindle (to paraphrase the old proverb).
